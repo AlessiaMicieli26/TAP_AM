@@ -1,0 +1,109 @@
+version: '3'
+
+services:
+  zookeeper: 
+    build:
+      context: ./kafka
+      dockerfile: ./Dockerfile
+    container_name: zookeeper
+    networks:
+      AleNet:
+        ipv4_address: 10.0.100.22
+    ports:
+      - "2181:2181"
+    environment:
+      KAFKA_ACTION: start-zk
+
+  kafkaserver:
+    build:
+      context: ./kafka
+      dockerfile: ./Dockerfile
+    container_name: kafkaserver
+    hostname: kafkaServer
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    networks:
+      AleNet:
+        ipv4_address: 10.0.100.23
+    environment:
+      - KAFKA_ACTION=start-kafka
+    healthcheck:
+      test: nc -z localhost:9092 || exit -1
+      start_period: 30s
+
+
+  kafka_ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    environment:
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=10.0.100.23:9092
+      - KAFKA_CLUSTERS_0_ZOOKEEPER=10.0.100.22:2181
+    container_name: kafkaUI
+    networks:
+      AleNet:
+    ports:
+      - "8080:8080"
+
+  logstash: 
+    build: 
+      context: ./logstash
+      dockerfile: ./Dockerfile
+    container_name: logstash
+    volumes:
+      - ./logstash/api_data.csv:/usr/share/logstash/api_data.csv
+    networks:
+      AleNet:
+    depends_on: 
+      kafkaserver:
+        condition: service_healthy
+
+  spark:
+    build: 
+      context: ./spark
+      dockerfile: ./Dockerfile
+    container_name: spark
+    command: "/opt/spark/bin/spark-submit --conf spark.driver.extraJavaOptions='-Divy.cache.dir=/tmp -Divy.home=/tmp' --master local --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.0.1,org.elasticsearch:elasticsearch-spark-30_2.12:8.13.4 /opt/spark/code/spark-app.py"
+    environment: 
+      SPARK_ACTION: "spark-submit-python"
+    ports: 
+      - "4040:4040"
+    depends_on:
+      - elasticsearch
+      - kafkaserver
+    networks:
+      AleNet:
+    volumes:
+      - ./spark/code:/opt/spark/code
+      - type: bind
+        source: ./.dataset
+        target: /opt/tap/.dataset
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.10.2
+    container_name: elasticsearch
+    hostname: elasticsearch
+    ports:
+      - "9200:9200"
+    environment:
+      - node.name=elasticsearch
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    networks:
+      AleNet:
+
+  
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.10.2
+    container_name: kibana
+    networks:
+      AleNet:
+    ports:
+      - "5601:5601"
+
+networks:
+  AleNet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.100.0/24
